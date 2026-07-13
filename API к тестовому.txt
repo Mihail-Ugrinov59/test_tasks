@@ -1,0 +1,180 @@
+openapi: 3.0.3
+info:
+  title: Order Status Webhook API
+  description: |
+    API для приёма событий об изменении статуса заказа от внешнего сервиса.
+    Используется сервисом push-уведомлений маркетплейса для оповещения пользователей.
+  version: 1.0.0
+  contact:
+    name: Marketplace Integration Team
+    email: integration@marketplace.example.com
+
+servers:
+  - url: https://api.marketplace.example.com
+    description: Production server
+  - url: https://api-staging.marketplace.example.com
+    description: Staging server
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /api/v1/order-status-events:
+    post:
+      summary: Получить событие изменения статуса заказа
+      description: >
+        Этот эндпоинт вызывается при изменении статуса заказа.
+        Допускается повторная отправка одного и того же события (идемпотентность по полю `eventId`).
+        Система обработает событие только один раз, при повторных запросах вернётся `200 OK` с признаком дубликата.
+      operationId: receiveOrderStatusEvent
+      tags:
+        - Order Status Events
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderStatusEventRequest'
+            examples:
+              statusChanged:
+                summary: Пример события "Передан в доставку"
+                value:
+                  eventId: "550e8400-e29b-41d4-a716-446655440000"
+                  orderId: "ORD-123456"
+                  newStatus: "SHIPPED"
+                  timestamp: "2026-07-13T15:30:00Z"
+                  metadata:
+                    trackingNumber: "TRACK-987654321"
+      responses:
+        '200':
+          description: Событие успешно принято (или определено как дубликат).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderStatusEventResponse'
+              examples:
+                processed:
+                  summary: Событие обработано (отправлены уведомления, если требуется)
+                  value:
+                    accepted: true
+                    processed: true
+                    duplicate: false
+                duplicate:
+                  summary: Обнаружен дубликат события
+                  value:
+                    accepted: true
+                    processed: false
+                    duplicate: true
+        '400':
+          description: Ошибка валидации запроса (например, отсутствуют обязательные поля).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "validation_error"
+                message: "Ошибка"
+        '401':
+          description: Неверный или отсутствующий API-ключ.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "unauthorized"
+                message: "Ошибка"
+        '422':
+          description: Событие не может быть обработано по бизнес-причинам (заказ не найден, неизвестный статус).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "unprocessable_entity"
+                message: "Ошибка"
+        '500':
+          description: Внутренняя ошибка сервера.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "internal_error"
+                message: "Ошибка"
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: API-ключ, выданный маркетплейсом внешнему сервису для аутентификации запросов.
+
+  schemas:
+    OrderStatusEventRequest:
+      type: object
+      required:
+        - eventId
+        - orderId
+        - newStatus
+        - timestamp
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          description: Уникальный идентификатор события (генерируется внешней системой). Используется для обеспечения идемпотентности.
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        orderId:
+          type: string
+          description: Идентификатор заказа во внешней системе (или сквозной идентификатор, известный маркетплейсу).
+          example: "ORD-123456"
+        newStatus:
+          type: string
+          description: Новый статус заказа. Допустимые значения определяются справочником статусов.
+          enum:
+            - NEW
+            - CONFIRMED
+            - SHIPPED
+            - DELIVERED
+            - CANCELLED
+            - RETURNED
+            - COMPLETED
+          example: "SHIPPED"
+        timestamp:
+          type: string
+          format: date-time
+          description: Дата и время изменения статуса в формате ISO 8601 (UTC).
+          example: "2026-07-13T15:30:00Z"
+        metadata:
+          type: object
+          description: Дополнительные данные о заказе или изменении статуса (например, трек-номер, комментарий). Необязательное поле.
+          additionalProperties: true
+          example:
+            trackingNumber: "TRACK-987654321"
+
+    OrderStatusEventResponse:
+      type: object
+      properties:
+        accepted:
+          type: boolean
+          description: Всегда true, если запрос прошёл аутентификацию и валидацию.
+        processed:
+          type: boolean
+          description: >
+            true — событие было обработано впервые (статус заказа в БД обновлён, возможно, отправлены уведомления).
+            false — событие проигнорировано (дубликат по eventId или статус не изменился).
+        duplicate:
+          type: boolean
+          description: true, если событие с таким eventId уже было обработано ранее.
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Машинно-читаемый код ошибки.
+        message:
+          type: string
+          description: Человекочитаемое описание ошибки.
